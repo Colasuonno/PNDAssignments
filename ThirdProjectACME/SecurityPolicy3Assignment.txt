@@ -1,0 +1,52 @@
+Base idea, design the policy with a least-privilege, default-deny approach
+
+Given the zones in the ACME network i labeled them with a certain trust level to get an idea of each zone
+
+Zone		Firewall		Hosts			Trust level
+
+Internet	Main Firewall		External hosts		Untrusted
+VPN Road War	Main Firewall		Remote users		??
+DMZ		Main Firewall		Web/Proxy server	Exposed, semitrusted(?)
+External Svc	Main Firewall		Client ext1/fantastic	Low trust
+Internal svc	Internal Firewall	DNS, Log Server, ...	High trust
+Clients		Internal Firewall	Arpwatch, PC1, PC2	Medium trust
+
+Approach:
+- Default deny -> any traffic not explicitly required is blocked
+- Public services only in the DMZ -> Web server e Proxy server are reachable from the outside (something else maybe?)
+- Proxy-enforced Internet access -> Internal hosts should not browse directly to internet. They should use the Proxy server for HTTP/HTTPS
+- Centralized logging -> relevent host/services should send logs to the Log server/Graylog
+- Restricted administration -> restict access to admin panels of the internal services
+- Vulnerability scanning -> allow scanning the ACME hosts for greenbone, but deny hosts to initiate connection to greenbone
+- Fantastic coffe ???
+
+Policy high level
+
+Internet towards:
+	- DMZ --> Allow only TCP 80/443 and proxy(?)
+	- Internal services --> deny
+	- Clients --> Deny
+	- External Services --> Deny ?
+
+DMZ towards:
+	- Internet --> Allow only required outbound traffic, via proxy
+	- Internal servers --> probably logging, maybe DNS?
+	- Clients --> Deny
+
+Clients towards:
+	- Internal servers --> Allow DNS, logging and maybe admin access if is an admin pc?
+	- DMZ --> Allow proxy access and web server access
+	- Internet -> Deny direct HTTP/HTTPS: allow only through proxy
+
+External services towards:
+	- DMZ --> maybe web server access and proxy for client ext1?
+	- Internal servers --> probably deny? or some kind of logging
+	- CLients --> deny
+
+VPN road warriors towards:
+	- Internal/DMZ --> only if required probably
+
+Greenbone towards:
+	- All ACME zones --> allow scanning traffic
+
+Maybe other traffic to filter (spoofing or something else)
