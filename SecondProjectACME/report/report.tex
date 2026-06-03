@@ -177,14 +177,36 @@ the very first packet: peers that do not carry the correct key are
 dropped silently, well before the TLS handshake starts, which makes
 handshake-level DoS attacks much harder to mount.
 
+\subsection{Cryptographic parameters}
+
+All keys and channels use the OPNsense defaults, which are already a
+reasonable modern baseline. The CA and every certificate it signs
+(OpenVPN server, road-warrior clients, IPSec server certificates) use
+\textbf{RSA-2048} as the key algorithm and \textbf{SHA-256} as the
+signature digest. The OpenVPN \textit{TLS static key} is a 2048-bit
+OpenVPN static-key block (PEM V1 format), used in \texttt{tls-auth}
+mode as an HMAC envelope on the control channel.
+
+For the data channel the OpenVPN server is configured with the default
+OPNsense cipher list \texttt{AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305}
+and \textbf{SHA-256} as the auth digest~\cite{openvpn}; the negotiation
+ends up on \textbf{AES-256-GCM}, an AEAD cipher that provides both
+confidentiality and integrity. The TLS control channel runs on TLS\,1.2+
+with the same RSA-2048 server certificate.
+
+The IPSec connection uses IKEv2 with the OPNsense defaults too: IKE
+proposal \textbf{AES-256 + SHA-256 + DH group 14} (MODP-2048), and ESP
+proposal \textbf{AES-256-GCM} (128-bit ICV) with PFS on DH group 14.
+IKE SA lifetime is 28800\,s, ESP SA lifetime 3600\,s, both with DPD
+30/120\,s as already mentioned.
+
 \section{Road-warriors OpenVPN}
 
 The OpenVPN server runs on the Main firewall, bound to the WAN address
 \texttt{100.100.0.2} on UDP\,1194. It uses \textit{topology subnet} over
 the \texttt{10.8.0.0/22} pool described in the brainstorming and
-authenticates clients with the internal CA plus the TLS static key.
-Cipher and digest are left to the OpenVPN negotiation defaults
-(AES-256-GCM as data cipher, SHA-256 as auth digest).
+authenticates clients with the internal CA plus the TLS static key
+(cryptographic parameters listed in Section~\ref{sec:pki}).
 
 \subsection{Per-user overrides}
 
@@ -336,8 +358,7 @@ authenticate each other with the certificates issued in
 Section~\ref{sec:pki}\footnote{Reusing the same CA created for OpenVPN.}
 and run Dead Peer Detection with a 30\,s delay and a 120\,s timeout, so
 that a half-broken tunnel is renegotiated automatically. Cipher suites
-are left to the OPNsense defaults (AES-256-GCM with PRF SHA-256 and DH
-group 14 for IKE; AES-256-GCM for the Child SAs).
+are the OPNsense defaults summarised in Section~\ref{sec:pki}.
 
 \subsection{Child SAs}
 
